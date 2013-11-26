@@ -25,9 +25,18 @@
 #
 
 require "rubygems"
+require "nokogiri"
 require "mysql"
 require File.expand_path(File.join(File.dirname(__FILE__), "settings"))
 require "digest/sha1"
+
+class TTXMLInfo
+  attr_accessor :path
+
+  def initialize(path)
+    @path = path
+  end
+end
 
 class ConnectionInfo
   attr_accessor :host
@@ -45,7 +54,7 @@ end
 
 class BugzillaToRedmine
   def initialize
-    @bugzillainfo =  ConnectionInfo.new(BUGZILLA_HOST, BUGZILLA_USER, BUGZILLA_PASSWORD, BUGZILLA_DB)
+    @xmlfilename = TEST_TRACK_MANIFEST
     @redmineinfo = ConnectionInfo.new(REDMINE_HOST, REDMINE_USER, REDMINE_PASSWORD, REDMINE_DB)
 
     # Bugzilla priority to Redmine priority map
@@ -64,6 +73,7 @@ class BugzillaToRedmine
 
   def migrate
     self.open_connections
+    self.open_xml
     self.perform_sanity_checks
     self.clear_redmine_tables
     self.migrate_projects
@@ -83,13 +93,15 @@ class BugzillaToRedmine
   end
 
   def open_connections
-    @bugzilladb = self.open_connection(@bugzillainfo)
     @redminedb = self.open_connection(@redmineinfo)
+  end
+  
+  def open_xml
+    @doc = Nokogiri::HTML(File.open(@xmlfilename))
   end
 
   def close_connections
     self.log "closing database connections"
-    @bugzilladb.close
     @redminedb.close
   end
 
@@ -145,20 +157,22 @@ class BugzillaToRedmine
     end
   end
 
-  def find_min_created_at_for_product(product_id)
+  def find_min_created_at_for_product(product_name)
     bug_when = '1970-01-01 10:22:25'
-    sql = "select min(b.creation_ts) from products p join bugs b on b.product_id = p.id where product_id=?"
-    self.bz_select_sql(sql, product_id) do |row|
-      bug_when = row[0]
+    dates_for_product = @doc.xpath("//defect/product[contains(., \"#{product_name}\")]/../date-entered").map { |node| Date.strptime(node.content, '%m/%d/%Y') }
+
+    if dates_for_product.any? then
+        bug_when = dates_for_product.sort.first.strftime('%Y-%m-%d 00:00:00')
     end
     return bug_when
   end
 
-  def find_max_bug_when_for_product(product_id)
+  def find_max_bug_when_for_product(product_name)
     bug_when = '1970-01-01 10:22:25'
-    sql = "select max(l.bug_when) from products p join bugs b on b.product_id = p.id join longdescs l on l.bug_id = b.bug_id where b.product_id=?"
-    self.bz_select_sql(sql, product_id) do |row|
-      bug_when = row[0]
+    dates_for_product = @doc.xpath("//defect/product[contains(., \"#{product_name}\")]/../defect-event/event-date").map { |node| Date.strptime(node.content, '%m/%d/%Y') }
+
+    if dates_for_product.any? then
+        bug_when = dates_for_product.sort.last.strftime('%Y-%m-%d 00:00:00')
     end
     return bug_when
   end
