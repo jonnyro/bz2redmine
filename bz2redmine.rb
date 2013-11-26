@@ -30,13 +30,6 @@ require "mysql"
 require File.expand_path(File.join(File.dirname(__FILE__), "settings"))
 require "digest/sha1"
 
-class TTXMLInfo
-  attr_accessor :path
-
-  def initialize(path)
-    @path = path
-  end
-end
 
 class ConnectionInfo
   attr_accessor :host
@@ -77,7 +70,6 @@ class BugzillaToRedmine
     self.perform_sanity_checks
     self.clear_redmine_tables
     self.migrate_projects
-    self.migrate_versions
     self.migrate_users
     self.migrate_groups
     self.migrate_members
@@ -142,19 +134,28 @@ class BugzillaToRedmine
   end
 
   def migrate_projects
+    red_id = 1
     tree_idx = 1
-    self.bz_select_sql("SELECT products.id, products.name, products.description, products.classification_id, classifications.name as classification_name FROM products, classifications WHERE products.classification_id = classifications.id order by products.name") do |row|
-      identifier = row[1].downcase
-      status = row[3] == 1 ? 9 : 1
-      created_at = self.find_min_created_at_for_product(row[0])
-      updated_at = self.find_max_bug_when_for_product(row[0])
-      self.red_exec_sql("INSERT INTO projects (id, name, description, is_public, identifier, created_on, updated_on, status, lft, rgt) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", row[0], row[1], row[2], 1, identifier,
+
+    products = @doc.xpath('//defect/product').map { |node| node.content }
+    #products = @doc.xpath('//defect/product').map { |node| node.content.downcase.gsub(/([^a-z])/,'') }
+
+    products = products.uniq 
+
+    products.each do |product|
+      identifier = product.downcase.gsub(/([^a-z])/,'') 
+      status = 1
+      created_at = self.find_min_created_at_for_product( product )
+      updated_at = self.find_max_bug_when_for_product( product )
+      self.red_exec_sql("INSERT INTO projects (id, name, description, is_public, identifier, created_on, updated_on, status, lft, rgt) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", red_id, product, "", 1, identifier,
         created_at, updated_at, status, tree_idx, tree_idx+1)
+      self.insert_project_trackers(red_id)
+      self.insert_project_modules(red_id)
       tree_idx = tree_idx + 2
       tree_idx = tree_idx + 2
-      self.insert_project_trackers(row[0])
-      self.insert_project_modules(row[0])
+      red_id = red_id + 1
     end
+
   end
 
   def find_min_created_at_for_product(product_name)
@@ -177,12 +178,6 @@ class BugzillaToRedmine
     return bug_when
   end
 
-  def migrate_versions
-    self.red_exec_sql("delete from versions")
-    self.bz_select_sql("SELECT id, product_id AS project_id, value AS name FROM versions") do |row|
-      self.red_exec_sql("INSERT INTO versions (id, project_id, name) VALUES (?, ?, ?)", row[0], row[1], row[2])
-    end
-  end
 
   def migrate_users
     ["DELETE FROM users",
